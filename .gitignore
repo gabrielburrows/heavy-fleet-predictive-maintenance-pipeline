@@ -1,0 +1,14 @@
+# Local environment variables
+.env
+
+# Python caching and virtual environments
+__pycache__/
+venv/
+.ipynb_checkpoints/
+
+# Data files
+/data
+
+# Personal dev tools
+start-open.ps1
+agents.md
