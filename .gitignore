@@ -12,3 +12,14 @@ venv/
 # Personal dev tools
 start-open.ps1
 agents.md
+
+# Model artifacts (large binary files)
+models/*.joblib
+models/*.pkl
+
+# Log files
+logs/*.log
+
+# Output artifacts
+outputs/*.csv
+outputs/*.json
