@@ -23,6 +23,7 @@ from config import (
     TABLE_FEATURES,
     TABLE_ACCOUNTS,
     TABLE_VEHICLES,
+    SENSOR_DASHBOARD_MAP,
 )
 
 logging.basicConfig(
@@ -56,8 +57,48 @@ def _load_fleet_data() -> pd.DataFrame:
 
     df = df_features.merge(df_vehicles, on="vehicle_id", how="inner")
     df = df.merge(df_accounts, on="account_id", how="left")
+
+    # Compute operational dashboard metrics from engineered sensor features
+    _compute_operational_metrics(df)
+
     log.info("Fleet loaded: %d vehicles across %d accounts", len(df), df["account_id"].nunique())
     return df
+
+
+def _compute_operational_metrics(df: pd.DataFrame) -> None:
+    """Derive operational dashboard metrics from per-sensor engineered features.
+
+    Maps sensor families to physical quantities based on EDA structural analysis:
+    - Family 397 (36 bins, fine-grain) → exhaust temperature profile
+    - Family 459 (20 bins, fine-grain) → DPF differential pressure distribution
+    - Family 291 (11 bins, med-grain) → engine soot mass index
+    """
+    # Exhaust temperature from family 397
+    cols_397_mean = [c for c in df.columns if c.startswith("s_397_") and c.endswith("_mean")]
+    cols_397_max = [c for c in df.columns if c.startswith("s_397_") and c.endswith("_max")]
+
+    # DPF differential pressure from family 459
+    cols_459_mean = [c for c in df.columns if c.startswith("s_459_") and c.endswith("_mean")]
+    cols_459_max = [c for c in df.columns if c.startswith("s_459_") and c.endswith("_max")]
+
+    # Engine soot mass index from family 291
+    cols_291_mean = [c for c in df.columns if c.startswith("s_291_") and c.endswith("_mean")]
+    cols_291_max = [c for c in df.columns if c.startswith("s_291_") and c.endswith("_max")]
+
+    if cols_397_mean:
+        df["avg_exhaust_temperature_c"] = df[cols_397_mean].mean(axis=1).round(2)
+    if cols_397_max:
+        df["peak_exhaust_temperature_c"] = df[cols_397_max].max(axis=1).round(2)
+
+    if cols_459_mean:
+        df["avg_dpf_differential_pressure_kpa"] = df[cols_459_mean].mean(axis=1).round(2)
+    if cols_459_max:
+        df["peak_dpf_differential_pressure_kpa"] = df[cols_459_max].max(axis=1).round(2)
+
+    if cols_291_mean:
+        df["avg_engine_soot_mass_index"] = df[cols_291_mean].mean(axis=1).round(2)
+    if cols_291_max:
+        df["peak_engine_soot_mass_index"] = df[cols_291_max].max(axis=1).round(2)
 
 
 def _classify_priority(probability: float) -> str:
@@ -134,6 +175,10 @@ def main() -> None:
 
     df_scored = _compute_fleet_scores(df_fleet, model)
 
+    # Rename raw DB columns to readable dashboard names
+    valid_renames = {old: new for new, old in SENSOR_DASHBOARD_MAP.items() if old in df_scored.columns}
+    df_scored = df_scored.rename(columns=valid_renames)
+
     # Add feature importance rank
     imp_ranks = _load_feature_importance_rank()
     if imp_ranks:
@@ -154,6 +199,11 @@ def main() -> None:
         "expected_repair_avoided",
         "feature_importance_rank",
         "model_version", "prediction_timestamp",
+        # Operational metrics
+        "total_operating_hours",
+        "avg_exhaust_temperature_c", "peak_exhaust_temperature_c",
+        "avg_dpf_differential_pressure_kpa", "peak_dpf_differential_pressure_kpa",
+        "avg_engine_soot_mass_index", "peak_engine_soot_mass_index",
     ]
     available_cols = [c for c in tableau_columns if c in df_scored.columns]
     df_output = df_scored[available_cols]

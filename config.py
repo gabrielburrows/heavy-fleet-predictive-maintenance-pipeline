@@ -51,6 +51,26 @@ TABLE_FEATURES = "vehicle_engineered_features"
 # --- Model versioning ---
 MODEL_VERSION = "1.0.0"
 
+# --- Dashboard / Tableau export mappings ---
+# NOTE: SCANIA Component X columns are all cumulative counters. 
+# The aliases below map the most predictive families (from feature importance)
+# to readable dashboard names.
+SENSOR_DASHBOARD_MAP = {
+    "total_operating_hours": "length_of_study_time_step",
+    # Primary degradation histogram (36 bins, highest feature importance)
+    "component_x_primary_hist_mean": "s_397_0_mean",
+    "component_x_primary_hist_max": "s_397_0_max",
+    # Secondary operational histogram (20 bins)
+    "component_x_secondary_hist_mean": "s_459_0_mean",
+    "component_x_secondary_hist_max": "s_459_0_max",
+    # Tertiary histogram (11 bins)
+    "component_x_tertiary_hist_mean": "s_291_0_mean",
+    "component_x_tertiary_hist_max": "s_291_0_max",
+    # Simple cumulative counters (single-bin families)
+    "component_x_cumulative_counter_1": "s_100_0_mean",
+    "component_x_cumulative_counter_2": "s_666_0_mean",
+}
+
 # --- Ensure directories ---
 for _dir in (MODELS_DIR, OUTPUTS_DIR, LOGS_DIR):
     os.makedirs(_dir, exist_ok=True)
