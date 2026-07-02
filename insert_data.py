@@ -26,32 +26,41 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
-_JAPANESE_COMPANIES: List[Tuple[str, str, int]] = [
-    ("Yamato Regional Freight", "Tokyo", 45),
-    ("Kanto Express Logistics", "Kanagawa", 38),
-    ("Tohoku Heavy Transport", "Miyagi", 52),
-    ("Okayama Industrial Shipping", "Okayama", 30),
-    ("Kyushu Fleet Services", "Fukuoka", 41),
-    ("Nagoya Freight Systems", "Aichi", 35),
-    ("Hokkaido Bulk Logistics", "Hokkaido", 48),
-    ("Osaka Port Carriers", "Osaka", 28),
-    ("Shikoku Cargo Lines", "Kagawa", 22),
-    ("Chubu Transport Group", "Nagano", 33),
-    ("Kyoto Distribution Co", "Kyoto", 25),
-    ("Hiroshima Fleet Corp", "Hiroshima", 27),
-    ("Sendai Express Haulage", "Miyagi", 20),
-    ("Niigata Freight Network", "Niigata", 18),
-    ("Fukuoka City Logistics", "Fukuoka", 31),
-    ("Sapporo Cold Chain", "Hokkaido", 24),
-    ("Kobe Marine Transport", "Hyogo", 36),
-    ("Okayama Valley Shipping", "Okayama", 19),
-    ("Shizuoka Port Logistics", "Shizuoka", 26),
-    ("Matsuyama Cargo Express", "Ehime", 21),
-    ("Kumamoto Heavy Haulage", "Kumamoto", 23),
-    ("Kanazawa Freight Lines", "Ishikawa", 17),
-    ("Utsunomiya Distribution", "Tochigi", 29),
-    ("Kochi Industrial Transport", "Kochi", 15),
-    ("Saga Fleet Management", "Saga", 16),
+_JAPANESE_COMPANIES: List[Tuple[str, str]] = [
+    ("Yamato Regional Freight", "Tokyo"),
+    ("Kanto Express Logistics", "Kanagawa"),
+    ("Tohoku Heavy Transport", "Miyagi"),
+    ("Okayama Industrial Shipping", "Okayama"),
+    ("Kyushu Fleet Services", "Fukuoka"),
+    ("Nagoya Freight Systems", "Aichi"),
+    ("Hokkaido Bulk Logistics", "Hokkaido"),
+    ("Osaka Port Carriers", "Osaka"),
+    ("Shikoku Cargo Lines", "Kagawa"),
+    ("Chubu Transport Group", "Nagano"),
+    ("Kyoto Distribution Co", "Kyoto"),
+    ("Hiroshima Fleet Corp", "Hiroshima"),
+    ("Sendai Express Haulage", "Miyagi"),
+    ("Niigata Freight Network", "Niigata"),
+    ("Fukuoka City Logistics", "Fukuoka"),
+    ("Sapporo Cold Chain", "Hokkaido"),
+    ("Kobe Marine Transport", "Hyogo"),
+    ("Okayama Valley Shipping", "Okayama"),
+    ("Shizuoka Port Logistics", "Shizuoka"),
+    ("Matsuyama Cargo Express", "Ehime"),
+    ("Kumamoto Heavy Haulage", "Kumamoto"),
+    ("Kanazawa Freight Lines", "Ishikawa"),
+    ("Utsunomiya Distribution", "Tochigi"),
+    ("Kochi Industrial Transport", "Kochi"),
+    ("Saga Fleet Management", "Saga"),
+]
+
+# Realistic fleet size targets (Pareto-like distribution, sums to ~23550)
+_FLEET_SIZE_TARGETS = [
+    3100, 2500, 1900, 1600, 1400,
+    1200, 1100, 950, 850, 750,
+    680, 620, 550, 500, 480,
+    450, 420, 400, 380, 350,
+    320, 300, 280, 250, 220,
 ]
 
 _ENGINE_FAMILIES = ["Cummins ISX15", "Mitsubishi P11C", "Isuzu 6SKY", "Mitsubishi P06C", "Cummins L9"]
@@ -62,21 +71,19 @@ _MODEL_SUFFIXES = ["FV Series", "500 Series", "Super Great", "Quon", "eCanter", 
 def _generate_company_pool(
     rng: np.random.Generator,
 ) -> pd.DataFrame:
-    """Generate pool of companies expanded by fleet_size copies."""
+    """Generate one row per company (fleet_size computed later from actual assignments)."""
     rows: List[Dict[str, Any]] = []
-    for idx, (name, prefecture, fleet_size) in enumerate(_JAPANESE_COMPANIES):
-        for _ in range(fleet_size):
-            rows.append({
-                "account_id": idx + 1,
-                "company_name": name,
-                "industry": rng.choice(
-                    ["Freight Transport", "Cold Chain Logistics",
-                     "Construction Materials", "Industrial Parts",
-                     "E-commerce Delivery", "Waste Management"],
-                ),
-                "operating_prefecture": prefecture,
-                "fleet_size": fleet_size,
-            })
+    for idx, (name, prefecture) in enumerate(_JAPANESE_COMPANIES):
+        rows.append({
+            "account_id": idx + 1,
+            "company_name": name,
+            "industry": rng.choice(
+                ["Freight Transport", "Cold Chain Logistics",
+                 "Construction Materials", "Industrial Parts",
+                 "E-commerce Delivery", "Waste Management"],
+            ),
+            "operating_prefecture": prefecture,
+        })
     return pd.DataFrame(rows)
 
 
@@ -85,8 +92,16 @@ def _assign_vehicles_to_accounts(
     company_pool: pd.DataFrame,
     rng: np.random.Generator,
 ) -> pd.DataFrame:
-    """Randomly assign each vehicle to a company account."""
-    account_ids = rng.choice(company_pool["account_id"].unique(), size=len(vehicle_ids))
+    """Assign vehicles to companies using realistic weighted distribution."""
+    num_companies = len(company_pool)
+    targets = np.array(_FLEET_SIZE_TARGETS[:num_companies], dtype=float)
+    # Scale weights to match actual number of vehicles
+    weights = targets / targets.sum()
+    account_ids = rng.choice(
+        company_pool["account_id"].values,
+        size=len(vehicle_ids),
+        p=weights,
+    )
     return pd.DataFrame({
         "vehicle_id": vehicle_ids,
         "account_id": account_ids,
@@ -306,7 +321,16 @@ def main() -> None:
     df_vehicles = _assign_vehicles_to_accounts(
         np.array(unique_vehicles), company_pool, rng
     )
-    df_accounts = company_pool.drop_duplicates(subset="account_id").reset_index(drop=True)
+
+    # Compute true fleet sizes from actual vehicle assignments
+    fleet_sizes = (
+        df_vehicles
+        .groupby("account_id")["vehicle_id"]
+        .nunique()
+        .rename("fleet_size")
+        .reset_index()
+    )
+    df_accounts = company_pool.merge(fleet_sizes, on="account_id", how="left").reset_index(drop=True)
 
     log.info("Uploading to Supabase (engineered features only)...")
     with engine.connect() as conn:
