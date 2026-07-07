@@ -1,4 +1,5 @@
 pandas
+pyarrow
 numpy
 scikit-learn
 scipy
@@ -6,3 +7,6 @@ joblib
 python-dotenv
 sqlalchemy
 psycopg2-binary
+xgboost
+lightgbm  # GPU-accelerated gradient boosting (CUDA support on Windows)
+# cupy-cuda12x  # optional: uncomment for CuPy GPU array ops

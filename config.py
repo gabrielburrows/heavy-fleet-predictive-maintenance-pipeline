@@ -1,6 +1,17 @@
 import os
 
+import numpy as np
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# --- GPU detection (legacy, kept for backward compatibility) ---
+try:
+    import lightgbm as lgb
+    _m = lgb.LGBMClassifier(n_estimators=1, max_depth=2, device="gpu")
+    _m.fit(np.random.randn(10, 3), np.random.randint(0, 2, 10))
+    GPU_AVAILABLE = True
+except Exception:
+    GPU_AVAILABLE = False
 
 # --- Data paths ---
 DATA_DIR = os.path.join(BASE_DIR, "data")
@@ -8,6 +19,7 @@ TRAIN_READOUTS_CSV = os.path.join(DATA_DIR, "train_operational_readouts.csv")
 TRAIN_SPECS_CSV = os.path.join(DATA_DIR, "train_specifications.csv")
 TRAIN_TTE_CSV = os.path.join(DATA_DIR, "train_tte.csv")
 TABLEAU_OUTPUT_CSV = os.path.join(DATA_DIR, "tableau_fleet_analytics.csv")
+ETL_CACHE_PARQUET = os.path.join(DATA_DIR, "engineered_features_cache.parquet")
 
 # --- Output paths ---
 MODELS_DIR = os.path.join(BASE_DIR, "models")
@@ -16,6 +28,10 @@ LOGS_DIR = os.path.join(BASE_DIR, "logs")
 MODEL_PATH = os.path.join(MODELS_DIR, "random_forest.joblib")
 EVALUATION_METRICS_PATH = os.path.join(OUTPUTS_DIR, "evaluation_metrics.json")
 FEATURE_IMPORTANCE_PATH = os.path.join(OUTPUTS_DIR, "feature_importance.csv")
+MODEL_METRICS_PATH = os.path.join(DATA_DIR, "model_metrics.csv")
+FEATURE_IMPORTANCE_TABLEAU_PATH = os.path.join(DATA_DIR, "feature_importance.csv")
+PREDICTIONS_PATH = os.path.join(DATA_DIR, "predictions.csv")
+RISK_TIER_SUMMARY_PATH = os.path.join(DATA_DIR, "risk_tier_summary.csv")
 
 # --- ETL ---
 CHUNK_SIZE = 100000
@@ -33,9 +49,9 @@ MAX_DEPTH = 10
 MIN_SAMPLES_LEAF = 5
 CLASS_WEIGHT = "balanced"
 
-# --- Risk thresholds ---
-HIGH_RISK_THRESHOLD = 0.75
-MEDIUM_RISK_THRESHOLD = 0.40
+# --- Risk thresholds (optimized for XGBoost, threshold=0.05) ---
+HIGH_RISK_THRESHOLD = 0.05
+MEDIUM_RISK_THRESHOLD = 0.03
 
 # --- Financial / sustainability constants ---
 CO2_PER_FAILURE_KG = 350.0
@@ -50,6 +66,8 @@ TABLE_FEATURES = "vehicle_engineered_features"
 
 # --- Model versioning ---
 MODEL_VERSION = "1.0.0"
+ALGORITHM_NAME = "XGBoost (hist)"
+HYPERPARAMETER_SEARCH = "RandomizedSearchCV"
 
 # --- Dashboard / Tableau export mappings ---
 # NOTE: SCANIA Component X columns are all cumulative counters. 

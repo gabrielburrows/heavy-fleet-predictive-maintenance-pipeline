@@ -8,6 +8,7 @@ venv/
 
 # Data files
 /data
+/resources
 
 # Personal dev tools
 start-open.ps1

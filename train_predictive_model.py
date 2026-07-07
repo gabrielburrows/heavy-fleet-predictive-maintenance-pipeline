@@ -2,13 +2,13 @@
 
 import json
 import logging
+import os
 
 import joblib
 import numpy as np
 import pandas as pd
 from dotenv import load_dotenv
-from scipy import __version__ as _scipy_ver
-from sklearn.ensemble import RandomForestClassifier
+from xgboost import XGBClassifier
 from sklearn.metrics import (
     accuracy_score,
     classification_report,
@@ -28,13 +28,11 @@ from sklearn.model_selection import (
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder
 from sqlalchemy import create_engine, text
-import os
 
 from config import (
     CV_FOLDS,
-    CLASS_WEIGHT,
     EVALUATION_METRICS_PATH,
     FEATURE_IMPORTANCE_PATH,
     MAX_DEPTH,
@@ -55,8 +53,12 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 
 
-def _load_features_from_db() -> pd.DataFrame:
-    """Load engineered features from Supabase."""
+# ---------------------------------------------------------------------------
+# Data loading
+# ---------------------------------------------------------------------------
+
+def _load_features_from_db():
+    """Load engineered features, accounts, and vehicles from Supabase."""
     load_dotenv()
     db_url = os.getenv("SUPABASE_DB_URL")
     if not db_url:
@@ -76,14 +78,6 @@ def _load_features_from_db() -> pd.DataFrame:
     return df_features, df_accounts, df_vehicles
 
 
-def _load_features_local() -> pd.DataFrame:
-    """Fallback: load features from local CSV if DB unavailable."""
-    features_path = os.path.join("outputs", "engineered_features.csv")
-    if not os.path.exists(features_path):
-        raise FileNotFoundError(f"Local features file not found at {features_path}")
-    return pd.read_csv(features_path)
-
-
 def _build_feature_matrix(df: pd.DataFrame):
     """Separate features (X) and target (y), identify column types."""
     drop_cols = ["vehicle_id", "in_study_repair", "length_of_study_time_step"]
@@ -101,8 +95,12 @@ def _build_feature_matrix(df: pd.DataFrame):
     return X, y, cat_cols, num_cols
 
 
+# ---------------------------------------------------------------------------
+# Model pipeline
+# ---------------------------------------------------------------------------
+
 def _build_pipeline(cat_cols: list, num_cols: list) -> Pipeline:
-    """Build scikit-learn Pipeline with ColumnTransformer."""
+    """Build scikit-learn Pipeline with ColumnTransformer + XGBoost."""
     preprocessor = ColumnTransformer(
         transformers=[
             ("num", SimpleImputer(strategy="median"), num_cols),
@@ -111,30 +109,41 @@ def _build_pipeline(cat_cols: list, num_cols: list) -> Pipeline:
                 ("ohe", OneHotEncoder(handle_unknown="ignore", sparse_output=False)),
             ]), cat_cols),
         ],
-        remainder="drop",
+        remainder="passthrough",
     )
 
     return Pipeline([
         ("preprocessor", preprocessor),
-        ("classifier", RandomForestClassifier(
+        ("classifier", XGBClassifier(
             n_estimators=N_ESTIMATORS,
             max_depth=MAX_DEPTH,
-            min_samples_leaf=MIN_SAMPLES_LEAF,
-            class_weight=CLASS_WEIGHT,
+            min_child_weight=MIN_SAMPLES_LEAF,
+            scale_pos_weight=15,
+            eval_metric="logloss",
+            tree_method="hist",
             random_state=RANDOM_STATE,
             n_jobs=-1,
+            verbosity=0,
         )),
     ])
 
 
+def _set_class_weight(pipeline: Pipeline, y: pd.Series) -> None:
+    """Set scale_pos_weight on the XGBoost classifier inside the pipeline."""
+    neg = (y == 0).sum()
+    pos = (y == 1).sum()
+    spw = float(neg / pos) if pos > 0 else 15.0
+    pipeline.set_params(classifier__scale_pos_weight=spw)
+
+
 def _hyperparameter_search(
-    pipeline: Pipeline, X_train: pd.DataFrame, y_train: pd.Series
+    pipeline: Pipeline, X_train: pd.DataFrame, y_train: pd.Series,
 ) -> Pipeline:
     """Run RandomizedSearchCV on a small hyperparameter space."""
     param_dist = {
         "classifier__n_estimators": [100, 200, 300, 500],
-        "classifier__max_depth": [6, 8, 10, 12, None],
-        "classifier__min_samples_leaf": [3, 5, 10],
+        "classifier__max_depth": [6, 8, 10, 12],
+        "classifier__min_child_weight": [3, 5, 10],
     }
 
     search = RandomizedSearchCV(
@@ -154,15 +163,17 @@ def _hyperparameter_search(
     return search.best_estimator_
 
 
+# ---------------------------------------------------------------------------
+# Evaluation
+# ---------------------------------------------------------------------------
+
 def _evaluate_model(
-    y_true: np.ndarray,
-    y_pred: np.ndarray,
-    y_proba: np.ndarray,
+    y_true: np.ndarray, y_pred: np.ndarray, y_proba: np.ndarray,
 ) -> dict:
     """Compute comprehensive evaluation metrics."""
     tn, fp, fn, tp = confusion_matrix(y_true, y_pred).ravel()
 
-    metrics = {
+    return {
         "accuracy": float(accuracy_score(y_true, y_pred)),
         "precision": float(precision_score(y_true, y_pred, zero_division=0)),
         "recall": float(recall_score(y_true, y_pred, zero_division=0)),
@@ -176,24 +187,24 @@ def _evaluate_model(
             "true_positive": int(tp),
         },
         "classification_report": classification_report(
-            y_true, y_pred, output_dict=True, zero_division=0
+            y_true, y_pred, output_dict=True, zero_division=0,
         ),
     }
-    return metrics
 
+
+# ---------------------------------------------------------------------------
+# Feature importance
+# ---------------------------------------------------------------------------
 
 def _extract_feature_importance(pipeline: Pipeline) -> pd.DataFrame:
     """Extract and rank feature importances from trained pipeline."""
+    preprocessor = pipeline.named_steps["preprocessor"]
     feature_names = (
-        pipeline.named_steps["preprocessor"]
-        .transformers_[0][2]
+        preprocessor.transformers_[0][2]
         + list(
-            pipeline.named_steps["preprocessor"]
-            .named_transformers_["cat"]
+            preprocessor.named_transformers_["cat"]
             .named_steps["ohe"]
-            .get_feature_names_out(
-                pipeline.named_steps["preprocessor"].transformers_[1][2]
-            )
+            .get_feature_names_out(preprocessor.transformers_[1][2])
         )
     )
     importances = pipeline.named_steps["classifier"].feature_importances_
@@ -205,6 +216,10 @@ def _extract_feature_importance(pipeline: Pipeline) -> pd.DataFrame:
     df["rank"] = range(1, len(df) + 1)
     return df
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main() -> None:
     log.info("=" * 60)
@@ -223,9 +238,11 @@ def main() -> None:
     valid_mask = y.notna()
     X, y = X[valid_mask], y[valid_mask].astype(int)
 
+    log.info("XGBoost (hist tree method, %d samples)", len(X))
+
     # Train/test split
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=TEST_SIZE, stratify=y, random_state=RANDOM_STATE
+        X, y, test_size=TEST_SIZE, stratify=y, random_state=RANDOM_STATE,
     )
     log.info("Train size: %d, Test size: %d", len(X_train), len(X_test))
 
@@ -234,12 +251,15 @@ def main() -> None:
 
     # Hyperparameter search on training set
     log.info("Running hyperparameter search (10 iterations, %d-fold CV)...", CV_FOLDS)
+    _set_class_weight(pipeline, y_train)
     best_pipeline = _hyperparameter_search(pipeline, X_train, y_train)
 
     # Cross-validation predictions for unbiased evaluation
     log.info("Generating cross-validated predictions...")
     cv = StratifiedKFold(n_splits=CV_FOLDS, shuffle=True, random_state=RANDOM_STATE)
-    y_cv_proba = cross_val_predict(best_pipeline, X_train, y_train, cv=cv, method="predict_proba")[:, 1]
+    y_cv_proba = cross_val_predict(
+        best_pipeline, X_train, y_train, cv=cv, method="predict_proba",
+    )[:, 1]
     y_cv_pred = (y_cv_proba >= 0.5).astype(int)
 
     log.info("Cross-validation metrics:")
@@ -271,6 +291,7 @@ def main() -> None:
     # Train final model on full data
     log.info("Training final model on full dataset...")
     final_pipeline = _build_pipeline(cat_cols, num_cols)
+    _set_class_weight(final_pipeline, y)
     final_pipeline.fit(X, y)
     joblib.dump(final_pipeline, MODEL_PATH)
     log.info("Model saved to %s", MODEL_PATH)
