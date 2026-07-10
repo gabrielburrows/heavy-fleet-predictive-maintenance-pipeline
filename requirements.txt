@@ -9,4 +9,6 @@ sqlalchemy
 psycopg2-binary
 xgboost
 lightgbm  # GPU-accelerated gradient boosting (CUDA support on Windows)
+pytest
+pytest-mock
 # cupy-cuda12x  # optional: uncomment for CuPy GPU array ops
